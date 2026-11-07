@@ -1,0 +1,42 @@
+name: Verify numerical examples
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install pinned dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run kinematics verification
+        working-directory: kinematics
+        run: python linkage.py
+
+      - name: Run FEA regression verification
+        working-directory: fea
+        run: python beam_check.py
+
+      - name: Run DXF verification
+        working-directory: dxf
+        run: python flat_pattern.py
+
+      - name: Check generated outputs
+        run: git status --short

@@ -1,0 +1,29 @@
+{
+  "model": "beam.step",
+  "material": {
+    "E_MPa": 2100.0,
+    "nu": 0.38
+  },
+  "load_N": [
+    0.0,
+    0.0,
+    -15.0
+  ],
+  "mesh": {
+    "elements": 3121,
+    "dofs": 19722,
+    "elem_size_mm": 4.0
+  },
+  "max_von_mises_MPa": 15.624686708583285,
+  "p95_von_mises_MPa": 12.670902643630555,
+  "probe": {
+    "point": "100,0,3",
+    "ux": 0.7591989036538821,
+    "uy": 0.003092386067947928,
+    "uz": -33.03747379265197,
+    "magnitude": 33.046195955636506
+  },
+  "max_abs_displacement_mm": 33.03756735137087,
+  "safety_factor_vs_yield": 3.2000641633686606,
+  "runtime_s": 12.0
+}
