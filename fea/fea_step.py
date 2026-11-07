@@ -56,10 +56,22 @@ def main():
     ap.add_argument("--fix", type=box, required=True, help="lo_x,lo_y,lo_z:hi_x,hi_y,hi_z")
     ap.add_argument("--load-box", type=box, required=True)
     ap.add_argument("--load", required=True, help="Fx,Fy,Fz in N")
+    ap.add_argument("--load-mode", choices=("traction", "total"), default="traction",
+                    help="surface load interpretation: uniform traction from total force, or constant traction")
+    ap.add_argument("--load-area", type=float, default=None,
+                    help="loaded face area in mm^2 when --load-mode=total")
     ap.add_argument("--probe", default=None, help="x,y,z point to report displacement")
     ap.add_argument("--elem-size", type=float, default=4.0, help="gmsh max element size, mm")
     ap.add_argument("--scale", type=float, default=1.0, help="deformed-plot exaggeration")
     ap.add_argument("--yield-mpa", type=float, default=None, help="yield strength for SF")
+    ap.add_argument("--symmetry-axis", choices=("x", "y", "z"), default=None,
+                    help="constrain displacement normal to a symmetry plane")
+    ap.add_argument("--symmetry-at", type=float, default=0.0,
+                    help="coordinate of the symmetry plane, mm")
+    ap.add_argument("--symmetry-both-faces", action="store_true",
+                    help="also constrain the normal displacement on the opposite outer face")
+    ap.add_argument("--traction-axis", choices=("x", "y", "z"), default="y",
+                    help="axis of the applied surface traction")
     ap.add_argument("--out", default="report.json")
     ap.add_argument("--png", default=None)
     a = ap.parse_args()
@@ -94,8 +106,7 @@ def main():
 
     # ---- load: uniform traction on BOUNDARY facets inside load box ----------
     lo_l, hi_l = a.load_box
-    # boundary facets = facets belonging to exactly one element
-    # (facets_satisfying alone also matches INTERIOR facets — learned 2026-10-25)
+    # Boundary facets = facets belonging to exactly one element.
     fcount = np.bincount(m.t2f.reshape(-1), minlength=m.facets.shape[1])
     bnd = np.where(fcount == 1)[0]
     sel = np.intersect1d(m.facets_satisfying(lambda x: in_box_points(x, lo_l, hi_l)), bnd)
@@ -103,26 +114,69 @@ def main():
         raise SystemExit("load box selects no boundary facets")
     fb = FacetBasis(m, e, facets=sel)
 
-    # selected facet area from triangle geometry (asm on a VECTOR basis does
-    # NOT integrate scalar area — learned 2026-10-25)
-    fv = m.facets[:, sel]
-    q0, q1, q2 = m.p[:, fv[0]], m.p[:, fv[1]], m.p[:, fv[2]]
-    area = float(0.5 * np.linalg.norm(np.cross(q1 - q0, q2 - q0, axis=0), axis=0).sum())
-    tvec = F / area
-    print(f"load facets: {len(sel)}, area={area:.2f} mm^2, traction={tvec} MPa", flush=True)
+    # A single STEP face may be triangulated into many mesh facets. Assemble
+    # the surface integral using a constant traction. For a total force, use
+    # the exact planar face area supplied separately by --load-area.
+    traction_axis = {"x": 0, "y": 1, "z": 2}[a.traction_axis]
+    if a.load_mode == "total":
+        if a.load_area is None:
+            raise SystemExit("--load-area is required with --load-mode total")
+        if not np.allclose(np.delete(F, traction_axis), 0.0):
+            raise SystemExit(
+                "--load must be zero in non-selected components; "
+                f"got F={F.tolist()} for traction axis {a.traction_axis}"
+            )
+        area = a.load_area
+        traction_value = F[traction_axis] / area
+    else:
+        area = None
+        traction_value = F[traction_axis]
+    tvec = np.zeros(3)
+    tvec[traction_axis] = traction_value
+    area_text = f"{area:.2f} mm^2" if area is not None else "not normalized"
+    print(f"load facets: {len(sel)}, area={area_text}, traction={tvec} MPa, axis={a.traction_axis}, mode={a.load_mode}", flush=True)
 
     @LinearForm
     def traction(v, w):
-        return v[0] * tvec[0] + v[1] * tvec[1] + v[2] * tvec[2]
+        return v[traction_axis] * tvec[traction_axis]
 
     f = asm(traction, fb)
 
-    # ---- fix: clamp every dof in the fix box --------------------------------
+    # ---- fix: clamp all displacement components on the fixed face -----------
     lo_f, hi_f = a.fix
-    D = basis.get_dofs(lambda x: in_box_points(x, lo_f, hi_f)).all()
+    fixed = basis.get_dofs(lambda x: in_box_points(x, lo_f, hi_f))
+    D = fixed.all()
     print(f"fixed dofs: {len(D)} ({time.time()-t0:.1f}s)", flush=True)
 
+    # Optional symmetry constraints. For a solid model, constrain the
+    # displacement normal to a symmetry plane. The selected component includes
+    # nodal and edge DOFs for ElementTetP2; facet DOFs may not exist.
+    # Syntax: --symmetry-axis z --symmetry-at 0 (axis x/y/z, coordinate mm).
+    if a.symmetry_axis is not None:
+        axis = {"x": 0, "y": 1, "z": 2}[a.symmetry_axis]
+        plane = a.symmetry_at
+        planes = [plane]
+        if a.symmetry_both_faces:
+            planes.append(float(np.max(m.p[axis])))
+        component = {0: "u^1", 1: "u^2", 2: "u^3"}[axis]
+        symmetry_dofs = []
+        for value in planes:
+            sym = basis.get_dofs(lambda x, value=value: np.abs(x[axis] - value) <= 1e-6)
+            for dof_group in (sym.nodal, sym.edge, sym.facet):
+                symmetry_dofs.extend(dof_group.get(component, []))
+        D = np.unique(np.concatenate([D, np.asarray(symmetry_dofs, dtype=int)]))
+        face_text = ",".join(f"{value:g}" for value in planes)
+        print(f"symmetry dofs: {len(D)} total ({a.symmetry_axis}={face_text})", flush=True)
+
     u = solve(*condense(K, f, D=D))
+    # Reaction check: prescribed-DOF reactions should balance the applied load.
+    residual = K @ u - f
+    reaction = residual[D]
+    applied = float(np.sum(f))
+    constrained_reaction = float(np.sum(reaction))
+    equilibrium_error = (abs(constrained_reaction + applied) /
+                         max(abs(applied), 1e-12))
+    print(f"equilibrium: applied={applied:.6g}, reactions={constrained_reaction:.6g}, rel_error={equilibrium_error:.3e}", flush=True)
     print(f"solved ({time.time()-t0:.1f}s)", flush=True)
 
     # ---- post: von Mises (STRESS trace for the hydrostatic part!) ------------
@@ -154,6 +208,7 @@ def main():
         p95_von_mises_MPa=float(np.percentile(vm_elem, 95)),
         probe=probe,
         max_abs_displacement_mm=float(np.abs(interp(m.p)).max()),
+        equilibrium_relative_error=equilibrium_error,
         safety_factor_vs_yield=(a.yield_mpa / vm_max) if a.yield_mpa else None,
         runtime_s=round(time.time() - t0, 1),
     )
