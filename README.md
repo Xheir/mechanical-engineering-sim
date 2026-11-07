@@ -60,7 +60,7 @@ python -m venv .venv
 # Windows Git Bash
 source .venv/Scripts/activate
 
-python -m pip install -r requirements.txt
+python -m pip install -r requirements-dev.txt
 ```
 
 If the default package index is unavailable in your region, use a trusted mirror explicitly. Do not execute downloaded install scripts or commit a private package index credential.
@@ -70,6 +70,9 @@ If the default package index is unavailable in your region, use a trusted mirror
 Run these checks from the repository root:
 
 ```bash
+python -m pytest -q
+
+# Or run the three examples directly:
 python kinematics/linkage.py
 python fea/beam_check.py
 python dxf/flat_pattern.py

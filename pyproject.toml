@@ -19,7 +19,7 @@ dependencies = [
   "matplotlib==3.11.2",
 ]
 
-[tool.project.urls]
+[project.urls]
 Repository = "https://github.com/Xheir/mechanical-engineering-sim"
 
 [tool.ruff]

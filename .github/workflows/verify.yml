@@ -23,20 +23,11 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      - name: Install pinned dependencies
-        run: python -m pip install -r requirements.txt
+      - name: Install pinned dependencies and test runner
+        run: python -m pip install -r requirements-dev.txt
 
-      - name: Run kinematics verification
-        working-directory: kinematics
-        run: python linkage.py
-
-      - name: Run FEA regression verification
-        working-directory: fea
-        run: python beam_check.py
-
-      - name: Run DXF verification
-        working-directory: dxf
-        run: python flat_pattern.py
+      - name: Run pytest verification suite
+        run: python -m pytest -q
 
       - name: Check generated outputs
         run: git status --short
