@@ -100,6 +100,38 @@ matplotlib==3.11.2
 
 The current source includes assertions for the core numerical gates. A passing gate means the example agrees with its stated reference; it does **not** certify a new geometry, material, load case, or manufactured part.
 
+## Independent Cook's membrane benchmark
+
+The generic STEP solver was also checked against the published Cook's membrane benchmark from the open CoFEA comparison repository. The reference case specifies a trapezoidal solid, thickness 5 mm, $E=70$ MPa, $\nu=0.33$, a 6.25 N/mm² shear traction on the right face, the left face clamped, and zero normal displacement on both front/back faces. The published CalculiX very-fine quadratic-tetrahedral result at point A is $u_y=32.26662$ mm.[1]
+
+The local solver reproduced the case with the same geometry, material, load, and boundary conditions. Its mesh-convergence results were:
+
+| Maximum element size | Tetrahedra | Computed $u_y$ at A | Difference from CalculiX |
+|---:|---:|---:|---:|
+| 4.0 mm | 845 | 32.137104 mm | −0.4014% |
+| 3.0 mm | 1,646 | 32.170672 mm | −0.2974% |
+| 2.0 mm | 4,754 | 32.232545 mm | −0.1056% |
+| 1.5 mm | 11,591 | 32.264664 mm | −0.0061% |
+
+The 1.5 mm result is effectively identical to the published reference for this metric. The solver also reported force equilibrium errors below $8\times10^{-13}$ relative across the mesh study. This is meaningful verification of the linear-elastic formulation for this benchmark—not proof that every arbitrary STEP model is correct.
+
+Reproduce the 1.5 mm check with:
+
+```bash
+python fea/fea_step.py benchmarks/cook_membrane.step \\
+  --E 70 --nu 0.33 \\
+  --fix=-0.001,0,-0.001:0.001,44.001,5.001 \\
+  --load-box=47.999,43.999,-0.001:48.001,60.001,5.001 \\
+  --load 0,500,0 --load-mode total --load-area 80 \\
+  --traction-axis y --symmetry-axis z --symmetry-at 0 \\
+  --symmetry-both-faces --probe 48,60,0 --elem-size 1.5 \\
+  --out cook_report.json
+```
+
+The benchmark input geometry and regression test are included in the repository so a reviewer can rerun the comparison without relying on the generated local scratch files.
+
+[1] CoFEA, “Cook's membrane - linear version,” benchmark README and published CalculiX results: https://github.com/spolanski/CoFEA/tree/master/benchmarks/02-cooks-membrane
+
 ## Generic STEP FEA example
 
 ```bash

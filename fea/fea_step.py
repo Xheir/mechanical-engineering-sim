@@ -3,8 +3,10 @@
 Pipeline: gmsh (OCC, STEP import) -> linear tets -> scikit-fem ElementTetP2.
 Units: mm, N, MPa.  BCs:
   --fix      : all dofs clamped for nodes inside the box (box hugs the fixed face)
-  --load-box : uniform traction F/area on boundary facets whose centroid is inside
-               the box (box hugs the loaded face)
+  --load-box : boundary facets whose centroid is inside the loaded face box
+  --load      : total force in N by default; use --load-mode traction for MPa
+                surface traction; --load-area makes total-force normalization exact
+
 
 Usage:
   python fea_step.py MODEL.step --E 2100 --nu 0.38 \
@@ -56,10 +58,10 @@ def main():
     ap.add_argument("--fix", type=box, required=True, help="lo_x,lo_y,lo_z:hi_x,hi_y,hi_z")
     ap.add_argument("--load-box", type=box, required=True)
     ap.add_argument("--load", required=True, help="Fx,Fy,Fz in N")
-    ap.add_argument("--load-mode", choices=("traction", "total"), default="traction",
-                    help="surface load interpretation: uniform traction from total force, or constant traction")
+    ap.add_argument("--load-mode", choices=("traction", "total"), default="total",
+                    help="surface load interpretation: total force, or constant traction")
     ap.add_argument("--load-area", type=float, default=None,
-                    help="loaded face area in mm^2 when --load-mode=total")
+                    help="loaded face area in mm^2 when --load-mode=total; otherwise estimate from selected facets")
     ap.add_argument("--probe", default=None, help="x,y,z point to report displacement")
     ap.add_argument("--elem-size", type=float, default=4.0, help="gmsh max element size, mm")
     ap.add_argument("--scale", type=float, default=1.0, help="deformed-plot exaggeration")
@@ -70,8 +72,8 @@ def main():
                     help="coordinate of the symmetry plane, mm")
     ap.add_argument("--symmetry-both-faces", action="store_true",
                     help="also constrain the normal displacement on the opposite outer face")
-    ap.add_argument("--traction-axis", choices=("x", "y", "z"), default="y",
-                    help="axis of the applied surface traction")
+    ap.add_argument("--traction-axis", choices=("x", "y", "z"), default=None,
+                    help="optional single axis of the applied surface traction")
     ap.add_argument("--out", default="report.json")
     ap.add_argument("--png", default=None)
     a = ap.parse_args()
@@ -117,16 +119,31 @@ def main():
     # A single STEP face may be triangulated into many mesh facets. Assemble
     # the surface integral using a constant traction. For a total force, use
     # the exact planar face area supplied separately by --load-area.
-    traction_axis = {"x": 0, "y": 1, "z": 2}[a.traction_axis]
+    if a.traction_axis is None:
+        nonzero = np.flatnonzero(np.abs(F) > 1e-12)
+        if len(nonzero) != 1:
+            raise SystemExit("provide --traction-axis for a multi-axis surface load")
+        traction_axis = int(nonzero[0])
+    else:
+        traction_axis = {"x": 0, "y": 1, "z": 2}[a.traction_axis]
+    axis_name = "xyz"[traction_axis]
     if a.load_mode == "total":
-        if a.load_area is None:
-            raise SystemExit("--load-area is required with --load-mode total")
         if not np.allclose(np.delete(F, traction_axis), 0.0):
             raise SystemExit(
                 "--load must be zero in non-selected components; "
-                f"got F={F.tolist()} for traction axis {a.traction_axis}"
+                f"got F={F.tolist()} for traction axis {axis_name}"
             )
-        area = a.load_area
+        if a.load_area is None:
+            # Fallback for generic STEP runs: estimate the selected planar
+            # face area from its boundary mesh facets. A benchmark can pass
+            # an exact CAD face area through --load-area instead.
+            fv = m.facets[:, sel]
+            q0, q1, q2 = m.p[:, fv[0]], m.p[:, fv[1]], m.p[:, fv[2]]
+            area = float(0.5 * np.linalg.norm(
+                np.cross(q1 - q0, q2 - q0, axis=0), axis=0
+            ).sum())
+        else:
+            area = a.load_area
         traction_value = F[traction_axis] / area
     else:
         area = None
@@ -134,7 +151,7 @@ def main():
     tvec = np.zeros(3)
     tvec[traction_axis] = traction_value
     area_text = f"{area:.2f} mm^2" if area is not None else "not normalized"
-    print(f"load facets: {len(sel)}, area={area_text}, traction={tvec} MPa, axis={a.traction_axis}, mode={a.load_mode}", flush=True)
+    print(f"load facets: {len(sel)}, area={area_text}, traction={tvec} MPa, axis={axis_name}, mode={a.load_mode}", flush=True)
 
     @LinearForm
     def traction(v, w):
