@@ -13,6 +13,10 @@ env/
 *.msh
 *.pos
 *.log
+*.step.msh
+
+# Generated benchmark geometry is recreated by the generator
+benchmarks/*.step
 
 # Local tooling / editors
 .vscode/
