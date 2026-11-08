@@ -128,7 +128,7 @@ python fea/fea_step.py benchmarks/cook_membrane.step \\
   --out cook_report.json
 ```
 
-The benchmark input geometry and regression test are included in the repository so a reviewer can rerun the comparison without relying on the generated local scratch files.
+The benchmark geometry generator and regression test are included in the repository, so a reviewer can recreate the STEP input and rerun the comparison without relying on local scratch files.
 
 [1] CoFEA, “Cook's membrane - linear version,” benchmark README and published CalculiX results: https://github.com/spolanski/CoFEA/tree/master/benchmarks/02-cooks-membrane
 
