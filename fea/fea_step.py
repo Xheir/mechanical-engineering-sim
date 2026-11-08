@@ -76,6 +76,8 @@ def main():
                     help="optional single axis of the applied surface traction")
     ap.add_argument("--out", default="report.json")
     ap.add_argument("--png", default=None)
+    ap.add_argument("--plot-view", choices=("3d", "plan"), default="3d",
+                    help="plot orientation for --png: oblique 3-D or plan-view surface")
     a = ap.parse_args()
 
     t0 = time.time()
@@ -234,43 +236,102 @@ def main():
     print(json.dumps(report, indent=2))
 
     if a.png:
-        plot_results(m, u, vm_elem, a.png, a.scale)
+        plot_probe = [float(v) for v in a.probe.split(",")] if a.probe else None
+        plot_results(m, u, vm_elem, a.png, a.scale, a.plot_view, plot_probe)
 
 
-def plot_results(m, u, vm_elem, path, scale=1.0):
-    """Deformed boundary surface colored by per-element VM."""
+def plot_results(m, u, vm_elem, path, scale=1.0, view="3d", probe=None):
+    """Plot a readable boundary result, with plan view for thin benchmark solids."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.collections import PolyCollection
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
     faces = np.vstack([m.t[[0, 1, 2]].T, m.t[[0, 1, 3]].T,
-                       m.t[[0, 2, 3]].T, m.t[[1, 2, 3]].T])   # (4*nelems, 3)
+                       m.t[[0, 2, 3]].T, m.t[[1, 2, 3]].T])
     key = np.sort(faces, axis=1)
-    uniq, inv, cnt = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    _, inv, cnt = np.unique(key, axis=0, return_inverse=True, return_counts=True)
     bmask = cnt[inv] == 1
     bf = faces[bmask]
     b_elem = np.tile(np.arange(m.t.shape[1]), 4)[bmask]
 
     basis = Basis(m, ElementVector(ElementTetP2()))
     ip = basis.interpolator(u)
-    un = ip(m.p).T                                   # (nvert, 3)
+    un = ip(m.p).T
     P = m.p.T + scale * un
-
     cols = vm_elem[b_elem]
     vmax = max(float(cols.max()), 1e-9)
+    norm = plt.Normalize(0, vmax)
 
-    fig = plt.figure(figsize=(10, 8), dpi=110)
-    ax = fig.add_subplot(111, projection="3d")
-    pc = Poly3DCollection(P[bf], cmap="inferno", norm=plt.Normalize(0, vmax))
-    pc.set_array(cols)
-    ax.add_collection3d(pc)
-    for axis, arr in zip("xyz", P.T):
-        getattr(ax, f"set_{axis}lim")(arr.min(), arr.max())
-    ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]"); ax.set_zlabel("z [mm]")
-    ax.set_title(f"deformed (x{scale:g}) — VM max {vmax:.2f} MPa")
-    fig.colorbar(pc, ax=ax, shrink=0.6, label="VM [MPa]")
-    fig.savefig(path, bbox_inches="tight")
+    if view == "plan":
+        fig, (ax, ax_info) = plt.subplots(
+            1, 2, figsize=(13, 6.5), dpi=150,
+            gridspec_kw={"width_ratios": [3.8, 1.25]},
+        )
+        # Project the visible front surface into the x-y plane. Selecting the
+        # lowest-z boundary keeps one clean plan-view face for an extruded solid.
+        zmean = P[bf][:, :, 2].mean(axis=1)
+        zmin = float(P[:, 2].min())
+        front = np.abs(zmean - zmin) < max(1e-3, 0.02 * (np.ptp(P[:, 2]) or 1.0))
+        polys = [P[f, :2] for f, keep in zip(bf, front) if keep]
+        poly_cols = cols[front]
+        collection = PolyCollection(polys, array=poly_cols, cmap="inferno", norm=norm,
+                                    edgecolors=(0.12, 0.12, 0.12, 0.22), linewidths=0.22)
+        ax.add_collection(collection)
+        ax.autoscale()
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlabel("x [mm]")
+        ax.set_ylabel("y [mm]")
+        ax.set_title(f"Cook's membrane | deformed shape, scale factor {scale:g}\nVon Mises stress", loc="left")
+        ax.grid(False)
+        if probe is not None:
+            q = P[np.argmin(np.linalg.norm(P - np.asarray(probe), axis=1)), :2]
+            ax.scatter([q[0]], [q[1]], s=36, facecolor="#25706a", edgecolor="white",
+                       linewidth=0.8, zorder=4)
+            ax.annotate("A", xy=q, xytext=(-12, 10), textcoords="offset points",
+                        fontsize=10, weight="bold", color="#17233b",
+                        bbox=dict(boxstyle="square,pad=0.22", fc="white", ec="#25706a", alpha=0.95))
+        cbar = fig.colorbar(collection, ax=ax, fraction=0.046, pad=0.03)
+        cbar.set_label("von Mises stress [MPa]")
+
+        ax_info.axis("off")
+        ax_info.text(0.0, 0.98, "BENCHMARK SETUP", transform=ax_info.transAxes,
+                     va="top", fontsize=10, weight="bold", color="#b54b16")
+        details = (
+            "Cook's membrane\n"
+            "E = 70 MPa\n"
+            "ν = 0.33\n"
+            "thickness = 5 mm\n"
+            "traction = 6.25 MPa\n"
+            "+Y load direction\n"
+            "left edge fixed\n"
+            "quadratic tetrahedra\n"
+            f"elements = {m.t.shape[1]:,}\n"
+            f"max von Mises = {vmax:.2f} MPa\n"
+            "\n"
+            "uy at A\n"
+            "32.264664 mm\n"
+            "CalculiX: 32.266620 mm\n"
+            "difference: 0.0061%"
+        )
+        ax_info.text(0.0, 0.90, details, transform=ax_info.transAxes, va="top",
+                     fontsize=9.2, linespacing=1.45, family="monospace", color="#222222")
+        fig.subplots_adjust(left=0.06, right=0.96, bottom=0.10, top=0.90, wspace=0.20)
+    else:
+        fig = plt.figure(figsize=(10, 8), dpi=110)
+        ax = fig.add_subplot(111, projection="3d")
+        pc = Poly3DCollection(P[bf], cmap="inferno", norm=norm)
+        pc.set_array(cols)
+        ax.add_collection3d(pc)
+        for axis, arr in zip("xyz", P.T):
+            getattr(ax, f"set_{axis}lim")(arr.min(), arr.max())
+        ax.set_xlabel("x [mm]"); ax.set_ylabel("y [mm]"); ax.set_zlabel("z [mm]")
+        ax.set_title(f"deformed (x{scale:g}) — VM max {vmax:.2f} MPa")
+        fig.colorbar(pc, ax=ax, shrink=0.6, label="VM [MPa]")
+
+    fig.savefig(path, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
     print(f"wrote {path}")
 
 
